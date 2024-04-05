@@ -1,6 +1,7 @@
 """
     Model definitions, with basic helper functions. Supports any model as long as it supports the functions specified in Model.
 """
+import os
 import torch
 import torch.nn as nn
 import openai
@@ -165,6 +166,12 @@ class Model(nn.Module):
         """
             Load the base model and tokenizer for a given model name.
         """
+        tmp_name = self.name
+        # Try to load model from shared local dir to avoid using cache and save disk space
+        weight_dir = os.path.expanduser(f"~/public_models/{self.name}")
+        if os.path.exists(weight_dir):
+            self.name = weight_dir
+
         if self.device is None or self.name is None:
             raise ValueError("Please set self.device and self.name in child class")
 
@@ -179,8 +186,26 @@ class Model(nn.Module):
             elif "llama" in self.name or "alpaca" in self.name:
                 # TODO: This should be smth specified in config in case user has
                 # llama is too big, gotta use device map
-                model = transformers.AutoModelForCausalLM.from_pretrained(self.name, **model_kwargs, device_map="balanced_low_0", cache_dir=self.cache_dir)
-                self.device = 'cuda:1'
+                # model = transformers.AutoModelForCausalLM.from_pretrained(self.name, **model_kwargs, device_map="balanced_low_0", cache_dir=self.cache_dir)
+                # self.device = 'cuda:1'
+                from accelerate import init_empty_weights, load_checkpoint_and_dispatch
+
+                with init_empty_weights():
+                    model = transformers.AutoModelForCausalLM.from_pretrained(
+                        self.name,
+                        torch_dtype=torch.float16,
+                        trust_remote_code=True,
+                        attn_implementation="flash_attention_2",
+                    )
+                model = load_checkpoint_and_dispatch(
+                    model,
+                    checkpoint=weight_dir,
+                    device_map="auto",
+                    no_split_module_classes=["LlamaDecoderLayer"],
+                )
+                self.device_map = "auto"
+                print("self.device:", self.device)
+
             elif "stablelm" in self.name.lower():  # models requiring custom code
                 model = transformers.AutoModelForCausalLM.from_pretrained(
                     self.name, **model_kwargs, trust_remote_code=True, device_map=device_map, cache_dir=self.cache_dir)
@@ -218,6 +243,7 @@ class Model(nn.Module):
                 trust_remote_code=True if "olmo" in self.name.lower() else False)
         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
+        self.name = tmp_name
         return model, tokenizer
 
     def load_model_properties(self):
@@ -368,7 +394,7 @@ class LanguageModel(Model):
             batch = texts[i:i+batch_size]
             tokenized = self.tokenizer(batch, return_tensors="pt", padding=True, return_attention_mask=True)
             label_batch = tokenized.input_ids
-            
+
             # # mask out padding tokens
             attention_mask = tokenized.attention_mask
             assert attention_mask.size() == label_batch.size()
@@ -389,12 +415,12 @@ class LanguageModel(Model):
                 if needs_sliding:
                     input_ids = input_ids.to(self.device)
                     mask = mask.to(self.device)
-                    
+
                 target_ids = input_ids.clone()
                 # Don't count padded tokens or tokens that already have computed probabilities
                 target_ids[:, :-trg_len] = -100
                 # target_ids[attention_mask == 0] = -100
-                
+
                 logits = self.model(input_ids, labels=target_ids, attention_mask=mask).logits.cpu()
                 target_ids = target_ids.cpu()
                 shift_logits = logits[..., :-1, :].contiguous()
@@ -409,7 +435,7 @@ class LanguageModel(Model):
 
                 del input_ids
                 del mask
-            
+
             # average over each sample to get losses
             batch_losses = [-np.mean(all_prob[idx]) for idx in range(label_batch.size(0))]
             # print(batch_losses)
@@ -465,12 +491,12 @@ class LanguageModel(Model):
             Get average entropy of each token in the text
         """
         # raise NotImplementedError("get_entropy not implemented for OpenAI models")
-        
+
         tokenized = self.tokenizer(text, return_tensors="pt").to(self.device)
         logits = self.model(**tokenized).logits[:,:-1]
         neg_entropy = F.softmax(logits, dim=-1) * F.log_softmax(logits, dim=-1)
         return -neg_entropy.sum(-1).mean().item()
-    
+
     @torch.no_grad()
     def get_max_norm(self, text: str, context_len=None, tk_freq_map=None):
         # TODO: update like other attacks
@@ -523,7 +549,7 @@ class OpenAI_APIModel(LanguageModel):
         self.model = None
         self.tokenizer = transformers.GPT2Tokenizer.from_pretrained('gpt2', cache_dir=self.cache_dir)
         self.API_TOKEN_COUNTER = 0
-    
+
     @property
     def api_calls(self):
         """
@@ -582,7 +608,7 @@ class OpenAI_APIModel(LanguageModel):
         kwargs = { "engine": openai_config.model, "max_tokens": 200 }
         if self.config.do_top_p:
             kwargs['top_p'] = self.config.top_p
-    
+
         r = openai.Completion.create(prompt=f"{p}", **kwargs)
         return p + r['choices'][0].text
 
@@ -615,7 +641,7 @@ class OpenAI_APIModel(LanguageModel):
         self.API_TOKEN_COUNTER += total_tokens
 
         return decoded
-    
+
     @torch.no_grad()
     def get_entropy(self, text: str):
         """

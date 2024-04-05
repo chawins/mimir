@@ -12,7 +12,7 @@ do
             --base_model "allenai/$model" \
             --specific_source ${subset} \
             --load_from_cache true \
-            --load_from_hf false \
+            --load_from_hf true \
             --n_samples 1000
     done
 done

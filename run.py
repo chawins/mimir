@@ -388,7 +388,7 @@ def generate_data_processed(
             config.chunk_size,
             ceil_pct=True,
         )
-        print("MOVING BASE MODEL TO GPU...", end="", flush=True)
+        print("[1] MOVING BASE MODEL TO GPU...", end="", flush=True)
         base_model.load()
 
     return data, seq_lens, n_samples
@@ -497,7 +497,7 @@ def main(config: ExperimentConfig):
         attacker_ne = attackers_dict[AllAttacks.NEIGHBOR]
         mask_model = attacker_ne.get_mask_model()
 
-    print("MOVING BASE MODEL TO GPU...", end="", flush=True)
+    print("[2] MOVING BASE MODEL TO GPU...", end="", flush=True)
     base_model.load()
 
     print(f"Loading dataset {config.dataset_nonmember}...")
@@ -580,7 +580,7 @@ def main(config: ExperimentConfig):
         torch.cuda.empty_cache()
 
         base_model = LanguageModel(config, name=config.scoring_model_name)
-        print("MOVING BASE MODEL TO GPU...", end="", flush=True)
+        print("[3] MOVING BASE MODEL TO GPU...", end="", flush=True)
         base_model.load()
 
     # Add neighbordhood-related data to 'data' here if we want it to be saved in raw data. Otherwise, add jsut before calling attack
